@@ -77,7 +77,7 @@ class mri_scan:
             plt.imshow(c, cmap="hsv", alpha=0.6, origin="lower")
         plt.show()
 
-def make_convnet(nrow,ncol,learning_rate=1e-4,load_weights=None):
+def make_convnet(nrow,ncol,learning_rate=1e-5,load_weights=None,dropout_rate=0.2):
     inputs = Input((nrow, ncol,1))
 
     conv1 = Conv2D(64, 3, activation = None, padding = 'same', kernel_initializer = 'he_normal')(inputs)
@@ -108,15 +108,16 @@ def make_convnet(nrow,ncol,learning_rate=1e-4,load_weights=None):
     conv4 = Conv2D(512, 3, activation = None, padding = 'same', kernel_initializer = 'he_normal')(conv4)
     conv4 = BatchNormalization()(conv4)
     conv4 = LeakyReLU()(conv4)
-    # conv4 = Dropout(0.2)(conv4)
+    conv4 = Dropout(0.2)(conv4)
     pool4 = MaxPooling2D(pool_size=(2, 2))(conv4)
 
     conv5 = Conv2D(1024, 3, activation = None, padding = 'same', kernel_initializer = 'he_normal')(pool4)
     conv5 = LeakyReLU()(conv5)
     conv5 = Conv2D(1024, 3, activation = None, padding = 'same', kernel_initializer = 'he_normal')(conv5)
     conv5 = LeakyReLU()(conv5)
-    flat = Flatten(data_format='channels_last')(conv5)
-    out = Dense(1,'sigmoid')(flat)
+    flat = Flatten()(conv5)
+    flat = Dropout(dropout_rate)(flat)
+    out = Dense(1,activation='sigmoid')(flat)
 
     model = Model(input = inputs, output = out)
 
@@ -125,8 +126,6 @@ def make_convnet(nrow,ncol,learning_rate=1e-4,load_weights=None):
 
     model.compile(optimizer = Adam(lr = learning_rate), loss = "binary_crossentropy", metrics = ["binary_accuracy"])
     return model
-
-
 
 def make_unet(nrow, ncol, learning_rate=1e-4, load_weights=None):
     '''
@@ -228,16 +227,16 @@ def train_unet(img_train,mask_train,img_test=None,mask_test=None,batch_size=5,va
     if not os.path.isdir(odir):
         os.mkdir(odir)
     model = make_unet(512,512,learning_rate=learning_rate)
-    model_checkpoint = ModelCheckpoint(odir+'/unet.hdf5', monitor='loss',verbose=1, save_best_only=True)
+    model_checkpoint = ModelCheckpoint(odir+'/unet.hdf5', monitor='val_loss',verbose=1, save_best_only=True)
     csv_logger = CSVLogger(odir+'/training_unet.log')
     model.fit(img_train, mask_train, batch_size=batch_size, epochs=epochs, verbose=1,validation_split=validation_split, shuffle=shuffle, callbacks=[model_checkpoint,csv_logger])
     with open(odir+'/params.txt','w') as outfile:
         outfile.write("n_train={0}\nn_test={1}\nbatch_size={2}\nvalidation_split={3}\nlearning_rate={4}\nepochs={5}\nshuffle={6}\n".format(len(img_train),len(img_test),batch_size,validation_split, learning_rate, epochs, shuffle))
     if not img_test is None:
-    	y_pred = model.predict(img_test, batch_size=1, verbose=1)
-    	np.save(odir+'/x_test.npy',img_test)
-    	np.save(odir+'/y_test.npy',mask_test)
-    	np.save(odir+'/y_pred_test.npy', y_pred)
+        y_pred = model.predict(img_test, batch_size=1, verbose=1)
+        np.save(odir+'/x_test.npy',img_test)
+        np.save(odir+'/y_test.npy',mask_test)
+        np.save(odir+'/y_pred_test.npy', y_pred)
         if plot:
             if not os.isdir('plots'):
                 os.mkdir('plots')
@@ -245,16 +244,16 @@ def train_unet(img_train,mask_train,img_test=None,mask_test=None,batch_size=5,va
                 plot_prediction(img_test,mask_test,y_pred,'plots',i)
     return model
 
-def train_convnet(img_train,mask_train,img_test=None,mask_test=None,batch_size=5,validation_split=0.05,learning_rate=1e-4,epochs=10,shuffle=True,odir="./",plot=False):
+def train_convnet(img_train,mask_train,img_test=None,mask_test=None,batch_size=5,validation_split=0.05,learning_rate=1e-4,epochs=10,shuffle=True,odir="./",plot=False,dropout_rate=0.5):
     if not os.path.isdir(odir):
         os.mkdir(odir)
-    model = make_convnet(512,512,learning_rate=learning_rate)
-    model_checkpoint = ModelCheckpoint(odir+'/convnet.hdf5', monitor='loss',verbose=1, save_best_only=True)
+    model = make_convnet(512,512,learning_rate=learning_rate,dropout_rate=dropout_rate)
+    model_checkpoint = ModelCheckpoint(odir+'/convnet.hdf5', monitor='val_loss',verbose=1, save_best_only=True)
     csv_logger = CSVLogger(odir+'/training_convnet.log')
     mask_train = np.array([np.sum(x) > 0 for x in mask_train]).astype('float32')
     model.fit(img_train, mask_train, batch_size=batch_size, epochs=epochs, verbose=1,validation_split=validation_split, shuffle=shuffle, callbacks=[model_checkpoint,csv_logger])
     with open(odir+'/params.txt','w') as outfile:
-        outfile.write("n_train={0}\nn_test={1}\nbatch_size={2}\nvalidation_split={3}\nlearning_rate={4}\nepochs={5}\nshuffle={6}\n".format(len(img_train),len(img_test),batch_size,validation_split, learning_rate, epochs, shuffle))
+        outfile.write("n_train={0}\nn_test={1}\nbatch_size={2}\nvalidation_split={3}\nlearning_rate={4}\nepochs={5}\nshuffle={6}\ndropout_rate={7}".format(len(img_train),len(img_test),batch_size,validation_split, learning_rate, epochs, shuffle,dropout_rate))
     if not img_test is None:
         y_pred = model.predict(img_test, batch_size=1, verbose=1)
         np.save(odir+'/x_test.npy',img_test)
@@ -265,6 +264,7 @@ def train_convnet(img_train,mask_train,img_test=None,mask_test=None,batch_size=5
     return model
 
 def dice_coef(y_true, y_pred):
+    # similar to intersection over union
     '''
     props to https://github.com/jocicmarko/ultrasound-nerve-segmentation/blob/master/train.py
     '''
@@ -275,6 +275,7 @@ def dice_coef(y_true, y_pred):
     return (2. * intersection) / (keras.sum(y_true_f) + keras.sum(y_pred_f) + smooth)
 
 def generalised_dice_loss(y_true, y_pred):
+	# written for the two-class case
     y_true_f = keras.cast(keras.flatten(y_true), 'float32')
     y_pred_f = keras.cast(keras.flatten(y_pred), 'float32')
     y_true_bg_f = keras.cast(keras.equal(keras.flatten(y_true),0), 'float32')
@@ -289,7 +290,7 @@ def load_data_h5(i,path="./scans.h5",t=1):
     f = h5py.File(path,'r')
     def load_transform(ind,dataset):
         img = f[dataset][ind]
-        img = np.concatenate(ind,2)
+        img = np.concatenate(img,2)
         img = img[np.newaxis,:,:,:]
         img = img.transpose((3,1,2,0))
         return img
@@ -299,6 +300,9 @@ def load_data_h5(i,path="./scans.h5",t=1):
         img /= 2048
         m = load_transform(ind, "contours/mask")
         return np.array([img,m])
-    r = np.array([liam[ind] for ind in i])
+    r = list()
+    for s in i:
+        r.append(liam(s))
     return r
+
 
