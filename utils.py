@@ -9,12 +9,15 @@ import nibabel as nib
 import os 
 import h5py
 from keras.models import *
+from keras import regularizers
 from keras.layers import Activation, Input, Dense, Flatten, merge, BatchNormalization, Conv2D, MaxPooling2D, UpSampling2D, Dropout, Cropping2D
 from keras.layers.advanced_activations import LeakyReLU
 from keras.optimizers import *
 from keras.callbacks import CSVLogger, ModelCheckpoint, LearningRateScheduler
 from keras import backend as keras
 
+import matplotlib as mpl
+mpl.use('Agg')
 
 class mri_scan:
     '''
@@ -76,6 +79,16 @@ class mri_scan:
             c = np.ma.masked_where(c < 1, c)
             plt.imshow(c, cmap="hsv", alpha=0.6, origin="lower")
         plt.show()
+
+def make_Ridge(nrow,ncol,learning_rate=1e-5,load_weights=None,lambd=0.01):
+    inputs = Input((nrow, ncol, 1))
+    flat = Flatten()(inputs)
+    flat = BatchNormalization()(flat)
+    node1 = Dense(1, activation="linear",kernel_regularizer=regularizers.l2(lambd),bias_regularizer=regularizers.l2(lambd))(flat)
+    out = Activation('sigmoid')(node1)
+    model = Model(input = inputs, output = out)
+    model.compile(optimizer = Adam(lr = learning_rate), loss = "binary_crossentropy", metrics = ["binary_accuracy"])
+    return model
 
 def make_convnet(nrow,ncol,learning_rate=1e-5,load_weights=None,dropout_rate=0.2):
     inputs = Input((nrow, ncol,1))
@@ -222,6 +235,15 @@ def plot_prediction(x,y,y_pred,odir,slice):
     a3.imshow(y_pred[slice][:,:,0],cmap='gray')
     fig.savefig(outfile, dpi=300)
     plt.close()
+    
+def plot_prediction_new(x,y_pred,odir,slice):
+    import matplotlib.pyplot as plt
+    outfile=odir+'/s'+str(slice)+'.pdf'
+    fig, (a1, a2) = plt.subplots(1,2)
+    a1.imshow(x[slice][:,:,0],cmap='gray')
+    a2.imshow(y[slice][:,:,0],cmap='gray')
+    fig.savefig(outfile, dpi=300)
+    plt.close()
 
 def train_unet(img_train,mask_train,img_test=None,mask_test=None,batch_size=5,validation_split=0.05,learning_rate=1e-4,epochs=10,shuffle=True,odir="./",plot=False):
     if not os.path.isdir(odir):
@@ -238,11 +260,31 @@ def train_unet(img_train,mask_train,img_test=None,mask_test=None,batch_size=5,va
         np.save(odir+'/y_test.npy',mask_test)
         np.save(odir+'/y_pred_test.npy', y_pred)
         if plot:
-            if not os.isdir('plots'):
-                os.mkdir('plots')
+            if not os.path.isdir(odir+'/plots'):
+                os.mkdir(odir+'/plots')
             for i in list(range(0,len(img_test))):
-                plot_prediction(img_test,mask_test,y_pred,'plots',i)
+                plot_prediction(img_test,mask_test,y_pred,odir+'/plots',i)
     return model
+
+def train_Ridge(img_train,mask_train,img_test=None,mask_test=None,batch_size=32,validation_split=0.05,learning_rate=1e-4,epochs=10,shuffle=True,odir="./",plot=False,lambd=0.5):
+    if not os.path.isdir(odir):
+        os.mkdir(odir)
+    model = make_Ridge(512,512,learning_rate=learning_rate,lambd=lambd)
+    model_checkpoint = ModelCheckpoint(odir+'/Ridge.hdf5', monitor='val_loss',verbose=1, save_best_only=True)
+    csv_logger = CSVLogger(odir+'/training_Ridge.log')
+    mask_train = np.array([np.sum(x) > 0 for x in mask_train]).astype('float32')
+    model.fit(img_train, mask_train, batch_size=batch_size, epochs=epochs, verbose=1,validation_split=validation_split, shuffle=shuffle, callbacks=[model_checkpoint,csv_logger])
+    with open(odir+'/params.txt','w') as outfile:
+        outfile.write("n_train={0}\nn_test={1}\nbatch_size={2}\nvalidation_split={3}\nlearning_rate={4}\nepochs={5}\nshuffle={6}\nlambda={7}".format(len(img_train),len(img_test),batch_size,validation_split, learning_rate, epochs, shuffle,lambd))
+    if not img_test is None:
+        y_pred = model.predict(img_test, batch_size=1, verbose=1)
+        np.save(odir+'/x_test.npy',img_test)
+        np.save(odir+'/y_test.npy',mask_test)
+        np.save(odir+'/y_pred_test.npy', y_pred)
+        if plot:
+            None
+    return model
+
 
 def train_convnet(img_train,mask_train,img_test=None,mask_test=None,batch_size=5,validation_split=0.05,learning_rate=1e-4,epochs=10,shuffle=True,odir="./",plot=False,dropout_rate=0.5):
     if not os.path.isdir(odir):
@@ -275,7 +317,7 @@ def dice_coef(y_true, y_pred):
     return (2. * intersection) / (keras.sum(y_true_f) + keras.sum(y_pred_f) + smooth)
 
 def generalised_dice_loss(y_true, y_pred):
-	# written for the two-class case
+    # written for the two-class case
     y_true_f = keras.cast(keras.flatten(y_true), 'float32')
     y_pred_f = keras.cast(keras.flatten(y_pred), 'float32')
     y_true_bg_f = keras.cast(keras.equal(keras.flatten(y_true),0), 'float32')
@@ -299,7 +341,8 @@ def load_data_h5(i,path="./scans.h5",t=1):
         img = img.astype('float32')
         img /= 2048
         m = load_transform(ind, "contours/mask")
-        return np.array([img,m])
+        # returns tuple image, mask
+        return img, m
     r = list()
     for s in i:
         r.append(liam(s))
