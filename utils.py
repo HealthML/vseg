@@ -339,12 +339,12 @@ def dice_coef(y_true, y_pred):
 
 def generalised_dice_loss(y_true, y_pred):
     # written for the two-class case
-    y_true_f = K.cast(keras.flatten(y_true), 'float32')
-    y_pred_f = K.cast(keras.flatten(y_pred), 'float32')
-    y_true_bg_f = K.cast(keras.equal(keras.flatten(y_true),0), 'float32')
+    y_true_f = K.cast(K.flatten(y_true), 'float32')
+    y_pred_f = K.cast(K.flatten(y_pred), 'float32')
+    y_true_bg_f = K.cast(K.equal(K.flatten(y_true),0), 'float32')
     y_pred_bg_f = 1 - y_pred_f
-    w_fg = 1 / (K.square(keras.sum(y_true_f))+1)
-    w_bg = 1 / (K.square(keras.sum(y_true_bg_f))+1)
+    w_fg = 1 / (K.square(K.sum(y_true_f))+1)
+    w_bg = 1 / (K.square(K.sum(y_true_bg_f))+1)
     numerator = w_fg * K.sum( y_true_f * y_pred_f ) + w_bg * K.sum( y_true_bg_f * y_pred_bg_f )
     denominator = w_fg * K.sum( y_pred_f + y_true_f ) + w_bg * K.sum( y_pred_bg_f + y_true_bg_f )
     return (1. - 2. * numerator/denominator)
@@ -358,42 +358,53 @@ def generalised_dice_loss_2(y_true, y_pred):
     shapes = K.shape(y_pred)
     vol = K.cast(shapes[1]*shapes[2]*shapes[3], 'float32')
     # flatten everything except channels (i.e. class probabilities)
-    y_true = K.reshape( y_true, (shapes[1]*shapes[2]*shapes[3], shapes[4]))
-    y_pred = K.reshape( y_pred, (shapes[1]*shapes[2]*shapes[3], shapes[4]))
+    y_true = K.reshape( y_true, (shapes[0], shapes[1]*shapes[2]*shapes[3], shapes[4]))
+    y_pred = K.reshape( y_pred, (shapes[0], shapes[1]*shapes[2]*shapes[3], shapes[4]))
 
-    weights = 1. - ((K.sum(y_true, 1)+1.) / vol)
+    # equal weights for each class:
+    # weights = 1. - ((K.sum(y_true, 2)+1.) / vol)
+    
+    # weights like in paper:
+    weights = 1. / K.square((K.sum(y_true, 1)+1.))
+    
     overlaps = K.sum( y_pred * y_true, axis = 1)
-    total = K.sum(y_pred + y_true)
+    total = K.sum(y_pred + y_true, axis = 1)
     
     numerator = -2. * (weights * overlaps)
     denominator = total * weights
-    return K.sum(numerator, -1) / K.sum(denominator, -1)
+    return 1. + K.sum(numerator, -1) / K.sum(denominator, -1)
     
 
 def dice_coef_foreground(y_true, y_pred):
     smooth = 1.
+    shapes = K.shape(y_pred)
+    # flatten everything except channels (i.e. class probabilities)
+    y_true = K.reshape( y_true, (shapes[0]*shapes[1]*shapes[2]*shapes[3], shapes[4]))
+    y_pred = K.reshape( y_pred, (shapes[0]*shapes[1]*shapes[2]*shapes[3], shapes[4]))
     _, y_true = tf.split(y_true,2,axis=-1)
     _, y_pred = tf.split(y_pred,2,axis=-1)
-    y_true = K.flatten(y_true)
-    y_pred = K.flatten(y_pred)
     intersection = K.sum(y_true * y_pred)
     return (2. * intersection) / (K.sum(y_true) + K.sum(y_pred) + smooth)
 
 def dice_coef_background(y_true, y_pred):
     smooth = 1.
+    shapes = K.shape(y_pred)
+    # flatten everything except channels (i.e. class probabilities)
+    y_true = K.reshape( y_true, (shapes[0]*shapes[1]*shapes[2]*shapes[3], shapes[4]))
+    y_pred = K.reshape( y_pred, (shapes[0]*shapes[1]*shapes[2]*shapes[3], shapes[4]))
     y_true, _ = tf.split(y_true,2,axis=-1)
     y_pred, _ = tf.split(y_pred,2,axis=-1)
-    y_true = K.flatten(y_true)
-    y_pred = K.flatten(y_pred)
     intersection = K.sum(y_true * y_pred)
     return (2. * intersection) / (K.sum(y_true) + K.sum(y_pred) + smooth)
 
 def dice_coef_foreground_loss(y_true, y_pred):
     smooth = 1.
+    shapes = K.shape(y_pred)
+    # flatten everything except channels (i.e. class probabilities)
+    y_true = K.reshape( y_true, (shapes[0]*shapes[1]*shapes[2]*shapes[3], shapes[4]))
+    y_pred = K.reshape( y_pred, (shapes[0]*shapes[1]*shapes[2]*shapes[3], shapes[4]))
     _, y_true = tf.split(y_true,2,axis=-1)
     _, y_pred = tf.split(y_pred,2,axis=-1)
-    y_true = K.flatten(y_true)
-    y_pred = K.flatten(y_pred)
     intersection = K.sum(y_true * y_pred)
     return (-2. * intersection) / (K.sum(y_true) + K.sum(y_pred) + smooth)
 
@@ -551,6 +562,7 @@ class Scan_DataGenerator(keras.utils.Sequence):
         X /= np.max(X)
         if self.crop != (0,0):
             X = X[:,self.crop[0]:(X.shape[1]-self.crop[0]),self.crop[1]:(X.shape[2]-self.crop[1]),:]
+            Y = Y[:,self.crop[0]:(Y.shape[1]-self.crop[0]),self.crop[1]:(Y.shape[2]-self.crop[1]),:]
         if not self.target_dim is None:
             target_dim = self.target_dim
             X_new = np.empty([X.shape[0],target_dim[0],target_dim[1],X.shape[3]])
